@@ -10,6 +10,13 @@ const job = computed(() => (printState.jobId ? getJob(printState.jobId) : undefi
 const sections = computed(() => new Set(printState.sections))
 const now = computed(() => new Date().toLocaleString('zh-CN'))
 
+// 导入迁移声明：含重算字段的结果打印出来必须带这行，免得与留在件上的旧单据混淆
+const migratedNote = computed(() => {
+  const m = job.value?.result?.migrated
+  if (!m) return ''
+  return `※ 本单含导入时重算/补全的数据（${m.fields.length} 项，非当年排样原版），与历史打印单据可能不一致`
+})
+
 const allInstances = computed(() => {
   if (!job.value?.result) return []
   return job.value.result.sheets.flatMap((s) => s.placements)
@@ -68,7 +75,9 @@ const boardByName = (name: string) =>
           {{ s.boardName }}（{{ s.material }} {{ s.thicknessMm }}mm） · 尺寸
           {{ s.wMm }}×{{ s.hMm }}mm · 利用率 {{ (s.utilization * 100).toFixed(1) }}% ·
           锯路 {{ job.kerfMm }}mm · 修边 {{ job.trimMm }}mm
+          <span v-if="s.migratedFields?.length"> · ※本板含导入补全：{{ s.migratedFields.join('、') }}</span>
         </p>
+        <p v-if="migratedNote" class="doc-meta migrated-note">{{ migratedNote }}</p>
         <div class="print-sheet-wrap">
           <SheetDiagram :sheet="s" :show-cuts="false" print-mode />
         </div>
@@ -127,6 +136,7 @@ const boardByName = (name: string) =>
       <section class="print-page">
         <h2>下料单 / 领料单</h2>
         <p class="doc-meta">项目：{{ job.name }} ｜ 打印时间：{{ now }}</p>
+        <p v-if="migratedNote" class="doc-meta migrated-note">{{ migratedNote }}</p>
 
         <h3>一、板材领料</h3>
         <table class="pgrid">
@@ -228,6 +238,10 @@ const boardByName = (name: string) =>
   color: #333;
   margin: 0 0 8px;
   font-size: 11px;
+}
+.migrated-note {
+  color: #92600a;
+  font-weight: 600;
 }
 .print-sheet-wrap {
   border: 1px solid #888;

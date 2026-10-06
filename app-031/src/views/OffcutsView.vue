@@ -17,6 +17,16 @@ const availArea = computed(() =>
     .reduce((a, o) => a + o.wMm * o.hMm, 0)
 )
 
+// 余料登记的是「登记那一刻」的尺寸快照：源项目之后若重新排样或导入重算过，
+// 这里不会跟着变（这是本机唯一仍拿旧值的地方，单独标出）
+const jobsById = computed(() => new Map(state.jobs.map((j) => [j.id, j])))
+function isStaleSnapshot(o: (typeof state.offcuts)[number]): boolean {
+  const j = jobsById.value.get(o.jobId)
+  if (!j?.result) return false
+  return j.result.generatedAt > o.createdAt || (j.result.migrated?.at ?? 0) > o.createdAt
+}
+const staleCount = computed(() => state.offcuts.filter((o) => isStaleSnapshot(o)).length)
+
 function add(): void {
   if (form.wMm < 50 || form.hMm < 50) {
     toast('余料尺寸过小，无再利用价值', 'bad')
@@ -58,6 +68,9 @@ function del(id: string): void {
     </section>
 
     <section class="panel" style="margin-top: 14px">
+      <p v-if="staleCount > 0" class="stale-note">
+        ※ {{ staleCount }} 块余料的来源项目之后重新排样或导入重算过，表中尺寸仍是登记时的旧值快照，不随结果更新。
+      </p>
       <table class="grid">
         <thead>
           <tr>
@@ -73,7 +86,15 @@ function del(id: string): void {
             <td><b>{{ o.wMm }}×{{ o.hMm }}</b></td>
             <td>{{ o.thicknessMm }}mm {{ o.material }}</td>
             <td>{{ (o.wMm * o.hMm / 1e6).toFixed(2) }}m²</td>
-            <td>{{ o.jobName }}（第 {{ o.sheetIndex + 1 }} 张）</td>
+            <td>
+              {{ o.jobName }}（第 {{ o.sheetIndex + 1 }} 张）
+              <span
+                v-if="isStaleSnapshot(o)"
+                class="tag warn"
+                title="来源项目之后重新排样或导入重算过，此处尺寸仍是登记时的旧值"
+                >旧值快照</span
+              >
+            </td>
             <td>{{ new Date(o.createdAt).toLocaleDateString('zh-CN') }}</td>
             <td>
               <button class="sm" @click="toggleOffcut(o.id)">{{ o.available ? '标记已用' : '恢复可用' }}</button>
@@ -102,5 +123,14 @@ function del(id: string): void {
 }
 tr.used {
   opacity: 0.55;
+}
+.stale-note {
+  background: #fffbeb;
+  border: 1px solid #f0d9b5;
+  color: #92600a;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  margin-bottom: 10px;
 }
 </style>

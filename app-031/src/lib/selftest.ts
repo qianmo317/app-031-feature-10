@@ -5,6 +5,7 @@ import type { Board, Job, Part } from '../types'
 import { nestJob } from './packing'
 import { simulate, countSawOps } from './cuts'
 import { guillotineViolation, type Rect } from './geometry'
+import { deepEqual, exportArchive, parseArchive } from './archive'
 
 export interface CheckResult {
   name: string
@@ -438,6 +439,64 @@ export function runSelfTest(): SelfTestReport {
       '多板种混排且 18mm 库存仅 1 张时超开并提示补采',
       ok,
       `18mm 用 ${thickSheets} 张（库存 1，需补采）、9mm 用 ${thinSheets} 张`
+    )
+  }
+
+  // 10) 存档迁移：v2 往返逐字段一致、重复导入判重、v1 缺字段补默认 + 内核重算并标记
+  {
+    const src = makeJob([
+      makePart({ code: 'M1', lenMm: 500, widMm: 400, qty: 2, edgeBands: ['top'], exposed: true }),
+      makePart({ code: 'M2', lenMm: 700, widMm: 300, qty: 1, grain: 'length' })
+    ])
+    src.result = nestJob(src)
+    // v2 导出 → 解析：不产生任何补全，迁移后与原对象逐字段一致
+    const plan = parseArchive(exportArchive([src]), [])
+    const rt =
+      plan.entries.length === 1 && plan.entries[0].notes.length === 0 && deepEqual(plan.entries[0].job, src)
+    // 同一份文件对本机已有项目再导入：判 same（不会写成两版）
+    const dup = parseArchive(exportArchive([src]), [src])
+    const dupOk = dup.entries[0]?.status === 'same'
+    // v1 老档：缺余料板类型/材质、按柜体分批、余料引用、result 若干字段、首板余料
+    const legacy = JSON.parse(JSON.stringify(src)) as Job
+    delete (legacy as Partial<Job>).batchByCabinet
+    delete (legacy as Partial<Job>).useOffcutIds
+    legacy.boards.forEach((b) => {
+      delete (b as Partial<Board>).kind
+      delete (b as Partial<Board>).material
+    })
+    legacy.parts.forEach((p) => delete (p as Partial<Part>).boardId)
+    const lr = legacy.result as unknown as Record<string, unknown>
+    delete lr.edgeBandM
+    delete lr.savedCents
+    delete lr.unplaced
+    delete lr.stockShortage
+    delete (lr.sheets as { offcuts?: unknown }[])[0].offcuts
+    const plan2 = parseArchive(JSON.stringify(legacy), [])
+    const e2 = plan2.entries[0]
+    const r2 = e2?.job.result
+    const migOk =
+      !!e2 &&
+      e2.status === 'new' &&
+      e2.notes.some((n) => n.path === 'batchByCabinet' && n.action === '补默认值') &&
+      e2.notes.some((n) => n.path === 'boards[0].kind') &&
+      // 重算值与内核现算一致，且逐项标记（不冒充历史原值）
+      !!r2?.migrated &&
+      r2.migrated.fields.includes('result.edgeBandM') &&
+      Math.abs(r2.edgeBandM.exposed - src.result!.edgeBandM.exposed) < 1e-9 &&
+      r2.savedCents === src.result!.savedCents &&
+      r2.unplaced.length === src.result!.unplaced.length &&
+      Array.isArray(r2.sheets[0].offcuts) &&
+      (r2.sheets[0].migratedFields?.includes('offcuts') ?? false) &&
+      // 迁移后的老档再导出 → 再导入：二次迁移为零改动（幂等）
+      parseArchive(exportArchive([e2.job]), []).entries[0]?.notes.length === 0
+    add(
+      '存档迁移：v2 往返一致、重复导入判重、v1 缺字段补默认+重算标记且幂等',
+      rt && dupOk && migOk,
+      [
+        `往返${rt ? '一致' : '不一致'}`,
+        `判重${dupOk ? '通过' : '失败'}`,
+        migOk ? `老档补全 ${plan2.entries[0]?.notes.length ?? 0} 项、重算值与内核一致` : '老档迁移不符预期'
+      ].join('；')
     )
   }
 

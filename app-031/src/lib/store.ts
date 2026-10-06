@@ -5,6 +5,7 @@ import { nestJob } from './packing'
 import { rebuildFromPlacements } from './cuts'
 import { guillotineViolation } from './geometry'
 import { uid } from './format'
+import { migrateJob } from './archive'
 import boardsData from '../data/boards.json'
 
 const JOBS_KEY = 'fco.jobs.v1'
@@ -43,6 +44,23 @@ function init(): void {
   if (state.loaded) return
   state.jobs = load<Job[]>(JOBS_KEY, [])
   state.offcuts = load<RegisteredOffcut[]>(OFFCUTS_KEY, [])
+  // 本机存档同样过一遍迁移：老版本写入 localStorage 的数据缺字段时按默认补齐，
+  // 保证「缺字段不能打不开」对本机存档与导入文件一视同仁
+  let migrated = 0
+  state.jobs = state.jobs.map((j) => {
+    try {
+      const m = migrateJob(j)
+      if (m && m.notes.length > 0) {
+        migrated++
+        console.info(`[存档迁移] 项目「${m.job.name}」补全 ${m.notes.length} 项`, m.notes)
+        return m.job
+      }
+      return m?.job ?? j
+    } catch {
+      return j
+    }
+  })
+  if (migrated > 0) persist()
   state.loaded = true
 }
 
@@ -356,22 +374,45 @@ export function newPart(partial: Partial<Part> = {}): Part {
   }
 }
 
-export function exportJobJson(job: Job): string {
-  return JSON.stringify(job, null, 2)
+export interface CommitEntry {
+  job: Job
+  mode: 'add' | 'overwrite'
 }
 
-export function importJobJson(json: string): Job | null {
+/**
+ * 导入确认后的整批写入：先快照本机存档，全部条目应用成功后一次性持久化；
+ * 任一条目失败即回退到导入前的样子（内存与 localStorage 一起还原）。
+ * 'add' 模式遇同编号直接报错（冲突必须在导入计划阶段由人定夺，不许悄悄覆盖）。
+ */
+export function commitImportJobs(entries: CommitEntry[]): { ok: boolean; count: number; error?: string } {
+  init()
+  if (entries.length === 0) return { ok: true, count: 0 }
+  const backupJobs = JSON.stringify(state.jobs)
+  const backupOffcuts = JSON.stringify(state.offcuts)
   try {
-    const obj = JSON.parse(json) as Job
-    if (!obj.parts || !obj.boards) return null
-    obj.id = uid('job')
-    obj.createdAt = Date.now()
-    obj.result = undefined
-    state.jobs.unshift(obj)
+    for (const e of entries) {
+      const cloned = JSON.parse(JSON.stringify(e.job)) as Job
+      const i = state.jobs.findIndex((j) => j.id === cloned.id)
+      if (e.mode === 'overwrite') {
+        if (i >= 0) state.jobs.splice(i, 1, cloned)
+        else state.jobs.unshift(cloned)
+      } else {
+        if (i >= 0) throw new Error(`项目编号 ${cloned.id} 与本机已有项目冲突，未获覆盖授权`)
+        state.jobs.unshift(cloned)
+      }
+    }
     persist()
-    return obj
-  } catch {
-    return null
+    return { ok: true, count: entries.length }
+  } catch (err) {
+    // 回退到导入前的样子
+    try {
+      state.jobs = JSON.parse(backupJobs) as Job[]
+      state.offcuts = JSON.parse(backupOffcuts) as RegisteredOffcut[]
+      persist()
+    } catch (rollbackErr) {
+      console.error('[导入回退失败]', rollbackErr)
+    }
+    return { ok: false, count: 0, error: err instanceof Error ? err.message : String(err) }
   }
 }
 

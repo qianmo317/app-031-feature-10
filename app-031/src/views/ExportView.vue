@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
 import { useRoute } from 'vue-router'
-import { getJob, exportJobJson } from '../lib/store'
+import { getJob } from '../lib/store'
+import { exportArchive } from '../lib/archive'
 import { printJob, type PrintSection } from '../lib/print'
 import { downloadText } from '../lib/format'
 import { toast } from '../lib/ui'
@@ -36,8 +37,8 @@ function doPrint(): void {
 function exportJson(): void {
   if (!job.value) return
   const safe = job.value.name.replace(/[\\/:*?"<>|]/g, '_')
-  downloadText(`开料项目_${safe}_${job.value.id.slice(-4)}.json`, exportJobJson(job.value), 'application/json')
-  toast('已导出项目 JSON（可在首页导回）', 'good')
+  downloadText(`开料项目_${safe}_${job.value.id.slice(-4)}.json`, exportArchive([job.value]), 'application/json')
+  toast('已导出项目存档（v2 格式，首页可导回；兼容读入老版文件）', 'good')
 }
 </script>
 

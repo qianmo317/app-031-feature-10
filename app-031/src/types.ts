@@ -87,6 +87,8 @@ export interface SheetResult {
   utilization: number
   offcuts: OffcutInfo[]
   adjusted?: boolean
+  /** 导入迁移时本板被补默认/重算的字段名（存在即说明含非历史原值） */
+  migratedFields?: string[]
 }
 
 export interface UnplacedInfo {
@@ -110,6 +112,12 @@ export interface NestResult {
   stockShortage: { boardId: string; boardName: string; need: number; have: number }[]
   elapsedMs: number
   generatedAt: number
+  /**
+   * 导入迁移标记：老存档缺失的结果字段已按当前明细由排样内核重算，
+   * fields 为被补默认/重算的字段路径，at 为迁移时间。
+   * 存在即说明本结果不是当年那一次排样的原版，与历史打印单据可能不一致。
+   */
+  migrated?: { at: number; fields: string[] }
 }
 
 export interface Job {

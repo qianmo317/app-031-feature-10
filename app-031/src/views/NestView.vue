@@ -161,6 +161,11 @@ function printNest(): void {
         {{ u.code }}（{{ u.name }}）×{{ u.qty }}：{{ u.reason }}
       </span>
     </div>
+    <div v-if="result.migrated" class="alert warn">
+      ※ 本结果含导入时补默认/重算的 {{ result.migrated.fields.length }} 项（{{
+        result.migrated.fields.join('、')
+      }}），由排样内核按当前明细算出并已标记，<b>不是当年那一次排样的原版</b>，与历史打印单据可能不一致。
+    </div>
     <div v-for="sh in result.stockShortage" :key="sh.boardId" class="alert warn">
       库存不足：{{ sh.boardName }} 需要 {{ sh.need }} 张，库存仅 {{ sh.have }} 张，请补采 {{ sh.need - sh.have }} 张。
     </div>
@@ -188,6 +193,13 @@ function printNest(): void {
           <span class="tag">{{ sheet?.boardName }}</span>
           <span class="tag good">利用率 {{ pct(sheet?.utilization ?? 0) }}</span>
           <span v-if="sheet?.adjusted" class="tag warn">已手工微调</span>
+          <span
+            v-if="sheet?.migratedFields?.length"
+            class="tag warn"
+            :title="`本板以下字段为导入时补默认/重算：${sheet.migratedFields.join('、')}`"
+          >
+            含导入补全
+          </span>
           <div class="spacer" />
           <label class="row small" style="gap:4px">
             <input type="checkbox" v-model="adjustMode" />

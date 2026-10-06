@@ -172,12 +172,7 @@ export function nestJob(job: Job): NestResult {
     ]
   }
 
-  const unplaced = new Map<string, { part: Part; qty: number }>()
-  const markUnplaced = (p: Part): void => {
-    const cur = unplaced.get(p.id)
-    if (cur) cur.qty++
-    else unplaced.set(p.id, { part: p, qty: 1 })
-  }
+  // 未排下信息不在循环里单独记账，尾部由 deriveResultStats 按「清单数 − 就位数」统一推导
 
   let seq = 0
   for (const inst of sorted) {
@@ -209,7 +204,6 @@ export function nestJob(job: Job): NestResult {
       }
     }
     if (!best) {
-      markUnplaced(p)
       continue
     }
     let s: SheetState
@@ -221,7 +215,6 @@ export function nestJob(job: Job): NestResult {
       // 正式新板（库存扣减）
       const nb = best.nb ?? pickNewBoard(p, best.o.pw, best.o.ph)
       if (!nb) {
-        markUnplaced(p)
         continue
       }
       s = openSheet(nb)
@@ -338,44 +331,80 @@ export function nestJob(job: Job): NestResult {
   // 组装 SheetResult
   const results: SheetResult[] = sheets.map((s) => buildSheet(s, kerf, trim))
 
-  // 统计
-  const boardsByType: Record<string, number> = {}
-  let totalCost = 0
-  for (const s of results) {
-    boardsByType[s.boardName] = (boardsByType[s.boardName] ?? 0) + 1
-    totalCost += s.priceCents
+  // 全部统计量由共享推导算出（存档迁移重算走的是同一个 deriveResultStats）
+  const stats = deriveResultStats(job, results)
+  return {
+    sheets: results,
+    ...stats,
+    elapsedMs: Math.round(performance.now() - t0),
+    generatedAt: Date.now()
   }
+}
+
+/** 单件就位零件的封边米数（按开料后实际净尺寸逐边累加；统计页/内核共用）。 */
+export function placementEdgeM(pl: Placement): number {
+  return (
+    (pl.origLen *
+      ((pl.edgeBands.includes('top') ? 1 : 0) + (pl.edgeBands.includes('bottom') ? 1 : 0)) +
+      pl.origWid *
+        ((pl.edgeBands.includes('left') ? 1 : 0) + (pl.edgeBands.includes('right') ? 1 : 0))) /
+    1000
+  )
+}
+
+export function unplacedReason(p: Part): string {
+  return p.grain === 'none'
+    ? '板材尺寸或库存不足，无法排下'
+    : p.grain === 'length'
+      ? '因纹理要求为竖纹（不可旋转），现有板材排不下'
+      : '因纹理要求为横纹（不可旋转），现有板材排不下'
+}
+
+/** nestJob 之外可由「板材清单 + 排样结果」推导的全部统计量（存档迁移重算同用）。 */
+export type DerivedStats = Omit<NestResult, 'sheets' | 'elapsedMs' | 'generatedAt' | 'migrated'>
+
+/**
+ * 由零件清单 + 各板摆法推导统计量：张数、按板种汇总、封边米数、未排清单、
+ * 库存缺口、随手排基线与省板、成本。nestJob 与存档迁移共用同一条判定，
+ * 保证排样页/统计页/打印单/本机存档看到的是同一批数。
+ */
+export function deriveResultStats(job: Job, sheets: SheetResult[]): DerivedStats {
+  const boards = job.boards.map(normalize)
+
+  const boardsByType: Record<string, number> = {}
+  let totalCostCents = 0
+  for (const s of sheets) {
+    boardsByType[s.boardName] = (boardsByType[s.boardName] ?? 0) + 1
+    totalCostCents += s.priceCents
+  }
+
   let exposedM = 0
   let normalM = 0
-  for (const s of results) {
+  for (const s of sheets) {
     for (const pl of s.placements) {
-      const m =
-        (pl.origLen *
-          ((pl.edgeBands.includes('top') ? 1 : 0) + (pl.edgeBands.includes('bottom') ? 1 : 0)) +
-          pl.origWid *
-            ((pl.edgeBands.includes('left') ? 1 : 0) + (pl.edgeBands.includes('right') ? 1 : 0))) /
-        1000
+      const m = placementEdgeM(pl)
       if (pl.exposed) exposedM += m
       else normalM += m
     }
   }
 
-  const unplacedList: UnplacedInfo[] = [...unplaced.values()].map((u) => ({
-    partId: u.part.id,
-    code: u.part.code,
-    name: u.part.name,
-    qty: u.qty,
-    reason:
-      u.part.grain === 'none'
-        ? '板材尺寸或库存不足，无法排下'
-        : u.part.grain === 'length'
-          ? '因纹理要求为竖纹（不可旋转），现有板材排不下'
-          : '因纹理要求为横纹（不可旋转），现有板材排不下'
-  }))
+  // 未排下 = 清单数量 − 各板就位数量
+  const placedQty = new Map<string, number>()
+  for (const s of sheets) {
+    for (const pl of s.placements) {
+      placedQty.set(pl.partId, (placedQty.get(pl.partId) ?? 0) + 1)
+    }
+  }
+  const unplaced: UnplacedInfo[] = []
+  for (const p of job.parts) {
+    const short = Math.max(0, p.qty) - (placedQty.get(p.id) ?? 0)
+    if (short > 0) {
+      unplaced.push({ partId: p.id, code: p.code, name: p.name, qty: short, reason: unplacedReason(p) })
+    }
+  }
 
-  const baselineBoards = shelfBaseline(job, boards, kerf, trim, results.length)
-  const optimizedBoards = results.length
-  const savedBoards = Math.max(0, baselineBoards - optimizedBoards)
+  const openedCount = new Map<string, number>()
+  for (const s of sheets) openedCount.set(s.boardId, (openedCount.get(s.boardId) ?? 0) + 1)
   const stockShortage = boards
     .filter((b) => b.kind !== 'offcut' && b.quantity > 0)
     .map((b) => ({
@@ -386,28 +415,27 @@ export function nestJob(job: Job): NestResult {
     }))
     .filter((x) => x.need > x.have)
 
-  const stockUsed = results.filter((s) => s.priceCents > 0)
+  const baselineBoards = shelfBaseline(job, boards, job.kerfMm, job.trimMm, sheets.length)
+  const savedBoards = Math.max(0, baselineBoards - sheets.length)
+  const stockUsed = sheets.filter((s) => s.priceCents > 0)
   const avgPrice =
     stockUsed.length > 0
       ? stockUsed.reduce((a, s) => a + s.priceCents, 0) / stockUsed.length
       : job.boards.reduce((a, b) => a + b.priceCents, 0) / Math.max(1, job.boards.length)
 
   return {
-    sheets: results,
-    boardsUsed: optimizedBoards,
+    boardsUsed: sheets.length,
     boardsByType,
     edgeBandM: {
       exposed: Math.round(exposedM * 100) / 100,
       normal: Math.round(normalM * 100) / 100
     },
-    unplaced: unplacedList,
+    unplaced,
     baselineBoards,
     savedBoards,
     savedCents: Math.round(savedBoards * avgPrice),
-    totalCostCents: totalCost,
-    stockShortage,
-    elapsedMs: Math.round(performance.now() - t0),
-    generatedAt: Date.now()
+    totalCostCents,
+    stockShortage
   }
 }
 
