@@ -92,6 +92,7 @@ function printCut(): void {
         <input type="range" min="180" max="1600" step="20" v-model.number="speed" style="width: 130px" />
       </label>
       <div class="spacer" />
+      <span v-if="result.recomputedAt" class="tag warn">导入重算版</span>
       <span class="tag">车间实际工步 {{ sawOps }}（{{ partCount }} 件，同向已连续排程）</span>
       <button class="sm" @click="printCut">打印裁切步骤表</button>
     </section>

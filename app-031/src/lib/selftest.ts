@@ -1,10 +1,13 @@
 // 自动化断言（规格书 §8/§10 强制）：
 // guillotine 100 组随机零反例、纹理零旋转、锯路/修边、守恒、封边复算、
 // 30 零件锯切工步 ≤20 且模拟器还原、余料再利用、300 零件性能 <1.5s。
+// 存档兼容：往返一致、老版本默认值补齐、结果缺项重算标记、重复导入判同、冲突清单。
 import type { Board, Job, Part } from '../types'
 import { nestJob } from './packing'
 import { simulate, countSawOps } from './cuts'
 import { guillotineViolation, type Rect } from './geometry'
+import { planImport } from './archive'
+import { exportJobJson } from './store'
 
 export interface CheckResult {
   name: string
@@ -439,6 +442,159 @@ export function runSelfTest(): SelfTestReport {
       ok,
       `18mm 用 ${thickSheets} 张（库存 1，需补采）、9mm 用 ${thinSheets} 张`
     )
+  }
+
+  // 10) 存档往返：导出→导入→导出完全一致；编号/创建时间/结果原样，不重新生成
+  {
+    const job = makeJob([
+      makePart({ code: 'RT1', lenMm: 700, widMm: 560, qty: 2, grain: 'length', edgeBands: ['left', 'right'] }),
+      makePart({ code: 'RT2', lenMm: 564, widMm: 560, qty: 1 })
+    ])
+    job.result = nestJob(job)
+    const j1 = exportJobJson(job)
+    const plan = planImport(j1, [], [])
+    const j2 = plan.ok && plan.job ? exportJobJson(plan.job) : ''
+    const ok =
+      plan.ok &&
+      plan.filled.length === 0 &&
+      !plan.recompute &&
+      j1 === j2 &&
+      plan.job!.id === job.id &&
+      plan.job!.createdAt === job.createdAt &&
+      plan.job!.result?.recomputedAt == null
+    add(
+      '存档导出→导入→导出完全一致（编号/时间/结果原样）',
+      ok,
+      ok ? '往返字节一致，未补默认值、未重算' : `补齐 ${plan.filled.length} 项，往返一致=${j1 === j2}`
+    )
+  }
+
+  // 11) 老版本存档：缺字段按默认值补齐并列清单；结果缺项由内核重算并标记；未知字段保留
+  {
+    const legacy = {
+      id: 'legacy_1',
+      name: '老项目',
+      createdAt: 1700000000000,
+      boards: [
+        {
+          id: 'lb1',
+          name: '颗粒板 2440×1220×18',
+          wMm: 2440,
+          hMm: 1220,
+          thicknessMm: 18,
+          material: '颗粒板',
+          priceCents: 13800,
+          quantity: 0
+          // 早期无余料板档：无 kind
+        }
+      ],
+      parts: [
+        {
+          id: 'lp1',
+          code: 'A',
+          name: '侧板',
+          lenMm: 700,
+          widMm: 560,
+          qty: 2,
+          grain: 'length',
+          edgeBands: ['left', 'right'],
+          cabinet: '地柜',
+          exposed: false
+        }
+      ],
+      kerfMm: 3.2,
+      trimMm: 8,
+      // 早期无 useOffcutIds / batchByCabinet / schemaVersion
+      result: {
+        sheets: [],
+        boardsUsed: 0,
+        boardsByType: {},
+        edgeBandM: { exposed: 0, normal: 0 },
+        unplaced: [],
+        legacyNote: '老系统附加字段'
+        // 缺 baselineBoards/savedBoards/savedCents/totalCostCents/stockShortage/elapsedMs/generatedAt
+      },
+      legacyExtra: { from: 'old-system' }
+    }
+    const plan = planImport(JSON.stringify(legacy), [], [])
+    const j = plan.job!
+    const paths = plan.filled.map((f) => f.path)
+    const fresh = nestJob(JSON.parse(JSON.stringify({ ...j, result: undefined })) as Job)
+    const ok =
+      plan.ok &&
+      paths.includes('useOffcutIds') &&
+      paths.includes('batchByCabinet') &&
+      paths.includes('boards[0].kind') &&
+      paths.includes('schemaVersion') &&
+      j.useOffcutIds.length === 0 &&
+      j.batchByCabinet === false &&
+      j.id === 'legacy_1' &&
+      j.createdAt === 1700000000000 &&
+      !!plan.recompute &&
+      (j.result?.recomputedFields?.length ?? 0) >= 7 &&
+      j.result?.recomputedAt != null &&
+      j.result?.origGeneratedAt == null &&
+      j.result?.boardsUsed === fresh.boardsUsed &&
+      j.result?.sheets.length === fresh.sheets.length &&
+      (j.result as unknown as Record<string, unknown>).legacyNote === '老系统附加字段' &&
+      plan.preservedUnknown.includes('legacyExtra') &&
+      (j as unknown as Record<string, unknown>).legacyExtra !== undefined
+    add(
+      '老存档缺字段按默认值补齐、结果缺项重算标记（与内核同源）',
+      ok,
+      ok
+        ? `补齐 ${plan.filled.length} 项（含余料档/按柜体分批），重算缺项 ${j.result?.recomputedFields?.length} 个，未知字段保留`
+        : `filled=[${paths.join(',')}] recompute=${!!plan.recompute}`
+    )
+  }
+
+  // 12) 完整老结果原样保留（不重算、不覆盖数值）；重复导入判同，不写成两版
+  {
+    const job = makeJob([makePart({ code: 'K1', lenMm: 500, widMm: 400, qty: 2 })])
+    job.result = nestJob(job)
+    job.result.savedCents = 12345 // 人为改值：验证完整结果不被重算覆盖
+    const json = exportJobJson(job)
+    const p1 = planImport(json, [], [])
+    const keep =
+      p1.ok && p1.job!.result!.savedCents === 12345 && p1.job!.result!.recomputedAt == null
+    const p2 = planImport(json, [p1.job!], [])
+    const dup = p2.ok && p2.conflict?.identical === true
+    add(
+      '完整老结果原样保留，重复导入判同不写成两版',
+      keep && dup,
+      keep ? (dup ? '结果未动；二次导入判定内容一致' : '重复导入未判同') : '完整结果被改动'
+    )
+  }
+
+  // 13) 同编号不同内容 → 冲突差异清单（不悄悄覆盖）
+  {
+    const a = makeJob([makePart({ code: 'C1', lenMm: 400, widMm: 300, qty: 1 })])
+    const b: Job = {
+      ...a,
+      name: '改名项目',
+      parts: [...a.parts, makePart({ code: 'C2', lenMm: 200, widMm: 200, qty: 3 })]
+    }
+    const plan = planImport(exportJobJson(b), [a], [])
+    const ok =
+      plan.ok &&
+      !!plan.conflict &&
+      !plan.conflict.identical &&
+      plan.conflict.diffs.some((d) => d.includes('名称')) &&
+      plan.conflict.diffs.some((d) => d.includes('零件'))
+    add(
+      '同编号不同内容导入给出冲突差异清单',
+      ok,
+      ok ? `差异 ${plan.conflict!.diffs.length} 条` : '冲突未被识别'
+    )
+  }
+
+  // 14) 无效存档明确报错（结构性字段缺失才拒绝；可补的缺字段一律能打开）
+  {
+    const bad1 = planImport('not json at all', [], [])
+    const bad2 = planImport('{"parts":[]}', [], [])
+    const bad3 = planImport('{"boards":[],"parts":[{"id":"x"}]}', [], [])
+    const ok = !bad1.ok && !bad2.ok && !bad3.ok && !!bad2.error && !!bad3.error
+    add('无效存档明确报错而不是打不开/静默丢', ok, ok ? '三类坏文件均给出错误信息' : '坏文件未被拒绝')
   }
 
   const elapsedMs = Math.round(performance.now() - t0)

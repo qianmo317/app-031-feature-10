@@ -43,6 +43,25 @@ const overallUtil = computed(() => {
   const total = result.value.sheets.reduce((a, s) => a + s.boardAreaMm2, 0)
   return total > 0 ? used / total : 0
 })
+// 按柜体汇总：与排样结果同一份 placements 派生（面积 mm² 整数累加，展示折 m² 两位）
+const byCabinet = computed(() => {
+  const map = new Map<string, { cabinet: string; pieces: number; areaMm2: number; edgeM: number }>()
+  for (const s of result.value?.sheets ?? []) {
+    for (const p of s.placements) {
+      const cur = map.get(p.cabinet) ?? { cabinet: p.cabinet, pieces: 0, areaMm2: 0, edgeM: 0 }
+      cur.pieces++
+      cur.areaMm2 += p.origLen * p.origWid
+      cur.edgeM +=
+        (p.origLen *
+          ((p.edgeBands.includes('top') ? 1 : 0) + (p.edgeBands.includes('bottom') ? 1 : 0)) +
+          p.origWid *
+            ((p.edgeBands.includes('left') ? 1 : 0) + (p.edgeBands.includes('right') ? 1 : 0))) /
+        1000
+      map.set(p.cabinet, cur)
+    }
+  }
+  return [...map.values()].sort((a, b) => a.cabinet.localeCompare(b.cabinet, 'zh'))
+})
 const utilMinMax = computed(() => {
   const us = result.value?.sheets.map((s) => s.utilization) ?? []
   if (us.length === 0) return { min: 0, max: 0 }
@@ -67,6 +86,11 @@ const utilMinMax = computed(() => {
         </p>
       </div>
     </section>
+
+    <div v-if="result.recomputedAt" class="alert">
+      ⚠️ 本页数字来自导入时按当前明细重算的结果（{{ new Date(result.recomputedAt).toLocaleString('zh-CN') }}），
+      与当时发到车间的那版可能不一致；缺项 {{ result.recomputedFields?.length ?? 0 }} 个已由排样内核补齐。
+    </div>
 
     <div v-if="result.stockShortage.length > 0" class="alert">
       ⚠️ 需补采：
@@ -129,6 +153,26 @@ const utilMinMax = computed(() => {
           </tbody>
         </table>
         <p class="small muted">共 {{ totalPieces }} 件零件。</p>
+      </section>
+
+      <section class="panel">
+        <h3>按柜体汇总（与排样结果同源）</h3>
+        <table class="grid">
+          <thead>
+            <tr><th>柜体/房间</th><th>件数</th><th>净面积</th><th>封边</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="c in byCabinet" :key="c.cabinet">
+              <td>{{ c.cabinet }}</td>
+              <td>{{ c.pieces }}</td>
+              <td>{{ (c.areaMm2 / 1e6).toFixed(2) }}m²</td>
+              <td>{{ c.edgeM.toFixed(2) }} m</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="small muted" style="margin-top: 8px">
+          面积按 mm² 累加后折 m²（2 位）；封边按零件实际边长逐边累加。
+        </p>
       </section>
 
       <section class="panel">

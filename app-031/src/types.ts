@@ -110,6 +110,11 @@ export interface NestResult {
   stockShortage: { boardId: string; boardName: string; need: number; have: number }[]
   elapsedMs: number
   generatedAt: number
+  // —— 导入兼容标记（仅老存档缺字段、导入时按当前明细重算后出现）——
+  // 有 recomputedAt 即表示「这不是当时那一版」，各页面与打印单据必须标明
+  recomputedAt?: number
+  recomputedFields?: string[] // 当时缺失、由排样内核重算补齐的字段路径
+  origGeneratedAt?: number // 原结果的生成时间（重算前的 generatedAt），仅原文件有值时保留
 }
 
 export interface Job {
@@ -123,6 +128,7 @@ export interface Job {
   useOffcutIds: string[] // 参与本单排样的登记余料
   batchByCabinet: boolean // 按柜体批次分组开料
   result?: NestResult
+  schemaVersion?: number // 存档结构版本（见 lib/archive.ts），老文件缺失时导入补齐
 }
 
 export interface RegisteredOffcut {

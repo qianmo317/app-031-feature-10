@@ -149,11 +149,18 @@ function printNest(): void {
       <div><b>{{ (result.edgeBandM.exposed + result.edgeBandM.normal).toFixed(1) }}m</b><span>封边总长</span></div>
       <div class="hl"><b>省 {{ result.savedBoards }} 张</b><span>约 {{ money(result.savedCents) }}</span></div>
       <div class="spacer" />
+      <span v-if="result.recomputedAt" class="tag warn">导入重算版</span>
       <button class="sm" @click="rerun">重新排样</button>
       <button class="sm" @click="registerAll">登记全部余料</button>
       <button class="sm primary" @click="printNest">打印排样图</button>
       <router-link class="sm btn-like" :to="`/cut/${job.id}`">看裁切步骤 →</router-link>
     </section>
+
+    <div v-if="result.recomputedAt" class="alert warn">
+      ⚠️ 本结果为导入时按当前明细重算（{{ new Date(result.recomputedAt).toLocaleString('zh-CN') }}），
+      缺项 {{ result.recomputedFields?.length ?? 0 }} 个已由排样内核补齐；与当时发到车间的那版可能不一致，
+      打印单据以本版为准。<template v-if="result.origGeneratedAt">原结果生成于 {{ new Date(result.origGeneratedAt).toLocaleString('zh-CN') }}。</template>
+    </div>
 
     <div v-if="result.unplaced.length > 0" class="alert bad">
       <b>{{ result.unplaced.reduce((a, u) => a + u.qty, 0) }} 件未排下：</b>

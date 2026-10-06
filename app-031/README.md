@@ -37,6 +37,7 @@ app-031/
 │   │   ├── geometry.ts          # guillotine 合法性校验
 │   │   ├── selftest.ts          # 100 组随机自动化断言
 │   │   ├── store.ts             # reactive 单例 + localStorage
+│   │   ├── archive.ts           # 项目存档导入导出：版本兼容/默认值补齐/重算标记/冲突与判重
 │   │   └── print.ts / format.ts / colors.ts / ui.ts
 │   ├── components/SheetDiagram.vue / PrintDocument.vue
 │   └── views/ Home / Parts / Nest / Cut / Stats / Offcuts / Export
@@ -52,6 +53,27 @@ npm run dev          # 本地开发 http://localhost:5173
 npm run build        # 类型检查 + 产物到 dist/
 npm run preview      # 预览生产构建
 ```
+
+## 项目存档（JSON）兼容策略
+
+导出即当前结构版本（`schemaVersion`，见 `src/lib/archive.ts`），**导出去再读回来字节一致**；
+文件里的项目编号与创建时间保持原样，导入不重新生成。老版本存档的兼容规则：
+
+- **缺字段按默认值补齐并逐项列出**：`useOffcutIds→[]`（余料板档）、`batchByCabinet→false`（按柜体分批）、
+  `kerfMm→3.2`、`trimMm→8`、`Board.kind→'stock'`、`Part.grain→'none'` 等，导入确认框里给出完整清单。
+- **多出来的字段原样保留**：不做白名单重建，本版本不认识的字段（含结果里的）随存档往返不丢。
+- **老结果缺数 → 按当前明细用排样内核整体重算**（两条路里选定的一条）：重算结果打
+  `recomputedAt/recomputedFields` 标记，排样页/统计页/裁切页/首页卡片与打印的排样图、裁切表、
+  下料单、标签全部标明「导入重算版」，不冒充当时那一次。代价：与当年发到车间的旧版单据可能不一致。
+  完整的旧结果则原样保留，绝不重算覆盖。
+- **同一份数**：重算与正常排样同源调用 `nestJob`，排样图、材料统计（按板/按柜体）、打印单据、
+  本机存档读的都是同一份 `job.result`；唯一仍拿旧值的地方——本机「余料登记」里源于本项目旧结果的
+  条目——在导入确认框里单独指出，需人工核对。
+- **冲突让人定**：文件编号与本机已有项目撞上时给出差异清单，由人选「保留两份 / 覆盖本机 / 取消」，
+  不悄悄覆盖；同一份文件重复导入判同，不写成两版；确认才整批写入，可整批退回，写入中途出错回退到导入前。
+
+**单位与精度（导入导出不改变）**：长度 mm 整数（显示取整）；面积内部恒为 mm² 整数、展示折 m² 留 2 位；
+金额恒为分、展示折元留 2 位；利用率 0~1、展示 % 留 1 位；封边 m 留 2 位。
 
 ## Docker（多阶段：node:20-alpine 构建 → nginx:1.27-alpine 运行）
 

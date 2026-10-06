@@ -5,6 +5,7 @@ import { nestJob } from './packing'
 import { rebuildFromPlacements } from './cuts'
 import { guillotineViolation } from './geometry'
 import { uid } from './format'
+import { ARCHIVE_VERSION, planImport, type ImportPlan } from './archive'
 import boardsData from '../data/boards.json'
 
 const JOBS_KEY = 'fco.jobs.v1'
@@ -84,7 +85,8 @@ export function createJob(name: string): Job {
     kerfMm: boardsData.defaults.kerfMm,
     trimMm: boardsData.defaults.trimMm,
     useOffcutIds: [],
-    batchByCabinet: false
+    batchByCabinet: false,
+    schemaVersion: ARCHIVE_VERSION
   }
   state.jobs.unshift(job)
   persist()
@@ -357,21 +359,64 @@ export function newPart(partial: Partial<Part> = {}): Part {
 }
 
 export function exportJobJson(job: Job): string {
-  return JSON.stringify(job, null, 2)
+  // 导出即当前结构版本；项目编号、创建时间、排样结果全部原样写出，导回不重新生成
+  return JSON.stringify({ schemaVersion: ARCHIVE_VERSION, ...job }, null, 2)
 }
 
-export function importJobJson(json: string): Job | null {
+/** 导入第一步：只核对不写入。返回差异清单（补默认值项/重算项/未知字段/冲突）。 */
+export function planJobImport(json: string): ImportPlan {
+  init()
+  return planImport(json, state.jobs, state.offcuts)
+}
+
+export interface ImportOutcome {
+  job?: Job
+  noop?: boolean // 内容完全一致，未重复写入
+  error?: string
+}
+
+/**
+ * 导入第二步：整批写入。冲突时按 decision 处理（overwrite 覆盖本机 / copy 保留两份）；
+ * 内容完全一致则不重复写入；写入中途出错回退到导入前的样子。
+ */
+export function applyImportPlan(
+  plan: ImportPlan,
+  decision: 'new' | 'overwrite' | 'copy' = 'new'
+): ImportOutcome {
+  init()
+  if (!plan.ok || !plan.job) return { error: plan.error ?? '导入计划无效' }
+  const incoming = plan.job
+  if (plan.conflict?.identical) {
+    return { job: getJob(incoming.id), noop: true }
+  }
+  if (plan.conflict && decision === 'new') {
+    return { error: '项目编号与本机已有项目冲突，需选择处理方式' }
+  }
+  const snapshot = JSON.stringify(state.jobs)
   try {
-    const obj = JSON.parse(json) as Job
-    if (!obj.parts || !obj.boards) return null
-    obj.id = uid('job')
-    obj.createdAt = Date.now()
-    obj.result = undefined
-    state.jobs.unshift(obj)
+    let job = incoming
+    if (plan.conflict && decision === 'overwrite') {
+      const i = state.jobs.findIndex((j) => j.id === incoming.id)
+      if (i < 0) return { error: '本机项目已不存在，无法覆盖' }
+      state.jobs.splice(i, 1, job)
+    } else if (plan.conflict && decision === 'copy') {
+      // 保留两份：副本必须换新编号（列表按编号索引），创建时间保持文件原样
+      job = { ...incoming, id: uid('job'), name: `${incoming.name}（导入副本）` }
+      state.jobs.unshift(job)
+    } else {
+      state.jobs.unshift(job)
+    }
     persist()
-    return obj
-  } catch {
-    return null
+    return { job }
+  } catch (e) {
+    // 回退：恢复导入前的项目列表
+    try {
+      state.jobs.splice(0, state.jobs.length, ...(JSON.parse(snapshot) as Job[]))
+      persist()
+    } catch {
+      // 回退本身也失败时保留现状，错误照常上报
+    }
+    return { error: `写入失败，已回退到导入前：${e instanceof Error ? e.message : String(e)}` }
   }
 }
 

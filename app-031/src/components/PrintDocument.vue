@@ -50,6 +50,17 @@ const cabinetGroups = computed(() => {
 const grainText = (g: string): string =>
   g === 'length' ? '竖纹' : g === 'width' ? '横纹' : '无要求'
 
+// 导入重算版：所有打印单据必须标明，不冒充当时那一次
+const recomputedNote = computed(() => {
+  const r = job.value?.result
+  if (!r?.recomputedAt) return ''
+  const at = new Date(r.recomputedAt).toLocaleString('zh-CN')
+  const orig = r.origGeneratedAt
+    ? `；原结果生成于 ${new Date(r.origGeneratedAt).toLocaleString('zh-CN')}`
+    : ''
+  return `⚠ 本单为导入后按当前明细重算的结果（重算于 ${at}${orig}），与此前发出的旧版单据可能不一致`
+})
+
 const boardByName = (name: string) =>
   job.value?.result?.sheets.find((x) => x.boardName === name)
 </script>
@@ -69,6 +80,7 @@ const boardByName = (name: string) =>
           {{ s.wMm }}×{{ s.hMm }}mm · 利用率 {{ (s.utilization * 100).toFixed(1) }}% ·
           锯路 {{ job.kerfMm }}mm · 修边 {{ job.trimMm }}mm
         </p>
+        <p v-if="recomputedNote" class="recompute-note">{{ recomputedNote }}</p>
         <div class="print-sheet-wrap">
           <SheetDiagram :sheet="s" :show-cuts="false" print-mode />
         </div>
@@ -104,6 +116,7 @@ const boardByName = (name: string) =>
       >
         <h2>裁切步骤表 · 第 {{ s.index + 1 }} 张（{{ s.boardName }}）</h2>
         <p class="doc-meta">按顺序下锯；同向刀已连续排程（减少推台翻转）；修边刀可多板叠切。</p>
+        <p v-if="recomputedNote" class="recompute-note">{{ recomputedNote }}</p>
         <table class="pgrid">
           <thead>
             <tr><th>刀序</th><th>类型</th><th>方向</th><th>位置(mm)</th><th>贯通区间(mm)</th><th>说明</th></tr>
@@ -127,6 +140,7 @@ const boardByName = (name: string) =>
       <section class="print-page">
         <h2>下料单 / 领料单</h2>
         <p class="doc-meta">项目：{{ job.name }} ｜ 打印时间：{{ now }}</p>
+        <p v-if="recomputedNote" class="recompute-note">{{ recomputedNote }}</p>
 
         <h3>一、板材领料</h3>
         <table class="pgrid">
@@ -192,6 +206,7 @@ const boardByName = (name: string) =>
     <!-- 标签（A4 不干胶，每块一张） -->
     <div v-if="sections.has('labels')">
       <section class="print-page labels-page">
+        <p v-if="recomputedNote" class="recompute-note labels-note">{{ recomputedNote }}</p>
         <div
           v-for="(p, i) in allInstances"
           :key="'lb' + i"
@@ -228,6 +243,19 @@ const boardByName = (name: string) =>
   color: #333;
   margin: 0 0 8px;
   font-size: 11px;
+}
+.recompute-note {
+  border: 1px solid #92600a;
+  background: #fffbeb;
+  color: #92600a;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  margin: 0 0 8px;
+}
+.labels-note {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 .print-sheet-wrap {
   border: 1px solid #888;
